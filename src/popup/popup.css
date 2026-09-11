@@ -1,0 +1,45 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  width: 300px;
+  background: #0e0e10;
+  color: #efeff1;
+  font-family: Inter, Roobert, "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: 13px;
+}
+
+.popup-container { padding: 16px; }
+
+.header {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 16px; padding-bottom: 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+.logo { font-size: 24px; }
+h1 { font-size: 16px; font-weight: 700; color: #bf94ff; }
+
+.section { margin-bottom: 14px; }
+.section label { display: block; font-weight: 600; margin-bottom: 4px; color: #dedee3; }
+
+select {
+  width: 100%; padding: 8px; border-radius: 4px;
+  background: #1f1f23; color: #efeff1; border: 1px solid #3a3a3d;
+  font-size: 13px; cursor: pointer;
+}
+select:focus { border-color: #9146ff; outline: none; }
+
+.hint { font-size: 11px; color: #adadb8; margin-top: 4px; }
+
+.toggle-label {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+}
+.toggle-label input[type="checkbox"] { accent-color: #9146ff; }
+
+.status-section {
+  background: #1f1f23; border-radius: 6px; padding: 10px;
+}
+.status-row { display: flex; justify-content: space-between; padding: 3px 0; }
+.status-row span:last-child { color: #bf94ff; font-weight: 600; }
+
+.footer { text-align: center; margin-top: 12px; }
+.version { font-size: 11px; color: #53535f; }

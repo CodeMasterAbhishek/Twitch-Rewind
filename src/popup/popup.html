@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <div class="header">
+      <span class="logo">⏪</span>
+      <h1>Twitch Rewind</h1>
+    </div>
+
+    <div class="section">
+      <label>Max Buffer Duration</label>
+      <select id="bufferDuration">
+        <option value="0.5">30 seconds</option>
+        <option value="1">1 minute</option>
+        <option value="5">5 minutes</option>
+        <option value="10" selected>10 minutes</option>
+        <option value="30">30 minutes</option>
+        <option value="60">1 hour</option>
+      </select>
+      <p class="hint" id="memoryHint">~600 MB at 1080p60</p>
+    </div>
+
+    <div class="section">
+      <label class="toggle-label">
+        <input type="checkbox" id="autoStart" checked>
+        <span>Auto-start on Twitch streams</span>
+      </label>
+    </div>
+
+    <div class="section">
+      <label class="toggle-label">
+        <input type="checkbox" id="preferVOD" checked>
+        <span>Prefer VOD mode (recommended)</span>
+      </label>
+      <p class="hint">Zero memory usage when available</p>
+    </div>
+
+    <div class="section status-section" id="statusSection">
+      <div class="status-row">
+        <span>Mode:</span>
+        <span id="currentMode">—</span>
+      </div>
+      <div class="status-row">
+        <span>Buffer:</span>
+        <span id="bufferFill">—</span>
+      </div>
+    </div>
+
+    <div class="footer">
+      <span class="version">v1.0.0</span>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
