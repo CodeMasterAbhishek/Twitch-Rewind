@@ -196,6 +196,15 @@
       this._targetSecondsBehind = secondsBehindLive;
       if (!this._isActive) {
         if (this._twitchVideo) {
+          if (this._posterCanvas) {
+              try {
+                  this._posterCanvas.width = this._twitchVideo.videoWidth || 1920;
+                  this._posterCanvas.height = this._twitchVideo.videoHeight || 1080;
+                  const ctx = this._posterCanvas.getContext('2d');
+                  ctx.drawImage(this._twitchVideo, 0, 0, this._posterCanvas.width, this._posterCanvas.height);
+                  this._posterCanvas.style.opacity = '1';
+              } catch (e) {}
+          }
           const currentMuted = this._twitchVideo.muted;
           const currentVolume = this._twitchVideo.volume;
           this._isActive = true;
@@ -222,13 +231,22 @@
       this._targetSecondsBehind = initialGapSeconds;
       this._setupOverlay();
 
-      if (this._twitchVideo) {
-          const currentMuted = this._twitchVideo.muted;
-          const currentVolume = this._twitchVideo.volume;
-          this._isActive = true;
-          this._twitchVideo.muted = currentMuted;
-          this._twitchVideo.volume = currentVolume;
-          this._twitchVideo.style.opacity = '0';
+        if (this._twitchVideo) {
+            if (this._posterCanvas) {
+                try {
+                    this._posterCanvas.width = this._twitchVideo.videoWidth || 1920;
+                    this._posterCanvas.height = this._twitchVideo.videoHeight || 1080;
+                    const ctx = this._posterCanvas.getContext('2d');
+                    ctx.drawImage(this._twitchVideo, 0, 0, this._posterCanvas.width, this._posterCanvas.height);
+                    this._posterCanvas.style.opacity = '1';
+                } catch (e) {}
+            }
+            const currentMuted = this._twitchVideo.muted;
+            const currentVolume = this._twitchVideo.volume;
+            this._isActive = true;
+            this._twitchVideo.muted = currentMuted;
+            this._twitchVideo.volume = currentVolume;
+            this._twitchVideo.style.opacity = '0';
       } else {
           this._isActive = true;
       }
@@ -289,6 +307,16 @@
         this._overlayVideo.addEventListener('seeked', () => this._setBuffering(false));
       }
 
+      if (!this._posterCanvas && this._twitchVideo) {
+          this._posterCanvas = document.createElement('canvas');
+          this._posterCanvas.style.cssText = `position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; opacity: 0; transition: opacity 0.2s ease; z-index: 2; background: #000;`;
+          this._twitchVideo.insertAdjacentElement('afterend', this._posterCanvas);
+          
+          const hidePoster = () => { if (this._posterCanvas) this._posterCanvas.style.opacity = '0'; };
+          this._overlayVideo.addEventListener('playing', hidePoster);
+          this._overlayVideo.addEventListener('canplay', hidePoster);
+      }
+
       if (!this._twitchVideo._twRewindHijacked) {
           this._twitchVideo._twRewindHijacked = true;
           
@@ -301,6 +329,12 @@
               set(v) {
                   if (self._isActive) {
                       self._overlayVideo.volume = v;
+                      
+                      if (v > 0 && self._overlayVideo.muted) {
+                          self._overlayVideo.muted = false;
+                          origMuted.set.call(this, false); 
+                      }
+                      
                       origVol.set.call(this, 0); // Force native silent
                   } else {
                       origVol.set.call(this, v);
@@ -312,8 +346,18 @@
               get() { return self._isActive ? self._overlayVideo.muted : origMuted.get.call(this); },
               set(m) {
                   if (self._isActive) {
+                      const wasMuted = self._overlayVideo.muted;
                       self._overlayVideo.muted = m;
-                      origMuted.set.call(this, true); // Force native silent
+                      
+                      if (wasMuted && !m) {
+                          if (self._overlayVideo.volume === 0) self._overlayVideo.volume = 0.5;
+                          if (!self._overlayVideo.paused) {
+                              self._overlayVideo.pause();
+                              self._overlayVideo.play().catch(()=>{});
+                          }
+                      }
+                      
+                      origMuted.set.call(this, m); // Allow native to mirror user intent for UI accuracy
                   } else {
                       origMuted.set.call(this, m);
                   }
@@ -348,6 +392,8 @@
       if (!this._isActive) return;
       this._setBuffering(false);
       
+      if (this._posterCanvas) this._posterCanvas.style.opacity = '0';
+
       const lastMuted = this._overlayVideo ? this._overlayVideo.muted : false;
       const lastVolume = this._overlayVideo ? this._overlayVideo.volume : 1;
       
@@ -368,6 +414,7 @@
 
     destroy() {
       this._setBuffering(false);
+      if (this._posterCanvas) { this._posterCanvas.remove(); this._posterCanvas = null; }
       if (this._hlsInstance) { this._hlsInstance.destroy(); this._hlsInstance = null; }
       if (this._mediaSource && this._mediaSource.readyState === 'open') { try { this._mediaSource.endOfStream(); } catch(e) {} }
       if (this._overlayVideo) { this._overlayVideo.pause(); this._overlayVideo.removeAttribute('src'); this._overlayVideo.load(); this._overlayVideo.remove(); this._overlayVideo = null; }
