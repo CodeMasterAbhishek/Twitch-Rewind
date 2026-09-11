@@ -15,13 +15,16 @@
       <label>Max Buffer Duration</label>
       <select id="bufferDuration">
         <option value="0.5">30 seconds</option>
-        <option value="1">1 minute</option>
-        <option value="5">5 minutes</option>
-        <option value="10" selected>10 minutes</option>
-        <option value="30">30 minutes</option>
         <option value="60">1 hour</option>
+        <option value="120">2 hours</option>
+        <option value="180">3 hours</option>
+        <option value="custom">Custom</option>
+        <option value="infinite">Infinite</option>
       </select>
-      <p class="hint" id="memoryHint">~600 MB at 1080p60</p>
+      <div id="customDurationWrapper" style="display: none; margin-top: 8px;">
+        <input type="number" id="customDuration" min="1" placeholder="Minutes" style="width: 100%; padding: 4px; box-sizing: border-box; background: var(--bg-tertiary); border: 1px solid var(--border-color); color: var(--text-primary); border-radius: 4px;">
+      </div>
+      <p class="hint" id="memoryHint">Stored locally on your drive</p>
     </div>
 
     <div class="section">
@@ -47,6 +50,10 @@
       <div class="status-row">
         <span>Buffer:</span>
         <span id="bufferFill">—</span>
+      </div>
+      <div class="status-row" id="diagRow" style="display:none; font-size: 11px; opacity: 0.8; margin-top: 4px; border-top: 1px dashed rgba(255,255,255,0.15); padding-top: 4px; word-break: break-all;">
+        <span>Engine:</span>
+        <span id="diagInfo">—</span>
       </div>
     </div>
 

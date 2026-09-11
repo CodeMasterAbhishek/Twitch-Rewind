@@ -33,3 +33,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
   }
 });
+
+
+// Failsafe: Cleanup orphaned IndexedDB databases on startup
+chrome.runtime.onStartup.addListener(async () => {
+  try {
+    if (indexedDB.databases) {
+      const dbs = await indexedDB.databases();
+      for (const db of dbs) {
+        if (db.name && db.name.startsWith("TwitchRewindDB_")) {
+          indexedDB.deleteDatabase(db.name);
+          console.log("Cleaned up orphaned database:", db.name);
+        }
+      }
+    }
+  } catch (e) {
+    console.error("Failed to clean up databases on startup", e);
+  }
+});

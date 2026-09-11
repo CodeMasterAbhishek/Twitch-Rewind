@@ -7,7 +7,7 @@
 
   const LOG_PREFIX = '[TwitchRewind]';
 
-  class Interceptor {
+    class Interceptor {
     constructor() {
       this._origAppendBuffer = null;
       this._origFetch = null;
@@ -18,6 +18,18 @@
       this._initSegments = new Map();
       this._started = false;
       this._lastMimeType = null;
+      
+      window.__TW_DEBUG__ = {
+        appendCalls: 0,
+        addSourceBufferCalls: 0,
+        chunksAdded: 0,
+        fetchCalls: 0,
+        tsFetchCalls: 0,
+        xhrCalls: 0,
+        workerCalls: 0,
+        errors: [],
+        lastError: null
+      };
     }
 
     start() {
@@ -26,12 +38,41 @@
       this._patchMediaSource();
       this._patchAppendBuffer();
       this._patchFetch();
+      this._patchXHR();
+      this._patchWorker();
+    }
+
+    _patchWorker() {
+      const self = this;
+      const OrigWorker = window.Worker;
+      window.Worker = function(...args) {
+        if (window.__TW_DEBUG__) window.__TW_DEBUG__.workerCalls++;
+        console.log(LOG_PREFIX, 'Worker instantiated:', args[0]);
+        return new OrigWorker(...args);
+      };
+      window.Worker.prototype = OrigWorker.prototype;
+    }
+
+    _patchXHR() {
+      const self = this;
+      const origOpen = XMLHttpRequest.prototype.open;
+      const origSend = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+        this._tw_url = typeof url === 'string' ? url : '';
+        return origOpen.call(this, method, url, ...rest);
+      };
+      XMLHttpRequest.prototype.send = function(...args) {
+        if (window.__TW_DEBUG__) window.__TW_DEBUG__.xhrCalls++;
+        return origSend.apply(this, args);
+      };
     }
 
     _patchMediaSource() {
       const self = this;
       this._origAddSourceBuffer = window.MediaSource.prototype.addSourceBuffer;
       window.MediaSource.prototype.addSourceBuffer = function(mimeType) {
+        if (window.__TW_DEBUG__) window.__TW_DEBUG__.addSourceBufferCalls++;
+        console.log(LOG_PREFIX, 'addSourceBuffer called with mimeType:', mimeType);
         const sb = self._origAddSourceBuffer.call(this, mimeType);
         try { sb._tw_mimeType = mimeType; } catch(e) {}
         return sb;
@@ -42,6 +83,7 @@
       const self = this;
       this._origAppendBuffer = SourceBuffer.prototype.appendBuffer;
       SourceBuffer.prototype.appendBuffer = function(data) {
+        if (window.__TW_DEBUG__) window.__TW_DEBUG__.appendCalls++;
         try {
           const copy = data instanceof ArrayBuffer ? data.slice(0) : new Uint8Array(data).buffer;
           const mimeType = this._tw_mimeType || this.mimeType || self._lastMimeType || 'video/mp4; codecs="avc1.64002a,mp4a.40.2"';
@@ -53,8 +95,17 @@
             const boxType = String.fromCharCode(view.getUint8(4), view.getUint8(5), view.getUint8(6), view.getUint8(7));
             if (boxType === 'ftyp') self._initSegments.set(mimeType, copy);
           }
-          for (const cb of self._segmentCallbacks) { try { cb(copy, mimeType, timestamp); } catch(e) {} }
-        } catch (e) {}
+          for (const cb of self._segmentCallbacks) { 
+            try { cb(copy, mimeType, timestamp); } catch(cbErr) {
+              if (window.__TW_DEBUG__) window.__TW_DEBUG__.errors.push('cb: ' + cbErr.message);
+            } 
+          }
+        } catch (e) {
+          if (window.__TW_DEBUG__) {
+            window.__TW_DEBUG__.errors.push('append: ' + e.message);
+            window.__TW_DEBUG__.lastError = e.message;
+          }
+        }
         return self._origAppendBuffer.call(this, data);
       };
     }
@@ -64,6 +115,12 @@
       this._origFetch = window.fetch;
       window.fetch = function(...args) {
         const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
+        if (window.__TW_DEBUG__) {
+          window.__TW_DEBUG__.fetchCalls++;
+          if (url.includes('.ts') || url.includes('.mp4') || url.includes('chunked') || url.includes('video-edge')) {
+            window.__TW_DEBUG__.tsFetchCalls++;
+          }
+        }
         if (url.includes('.m3u8')) {
           for (const cb of self._playlistCallbacks) { try { cb(url); } catch(e) {} }
         }
@@ -80,37 +137,137 @@
     clearCallbacks() { this._segmentCallbacks = []; this._playlistCallbacks = []; }
   }
 
-  class SegmentBuffer {
-    constructor(maxDurationMs = 10 * 60 * 1000) {
-      this._maxDuration = maxDurationMs;
-      this._chunks = [];
-      this._pinTimestamp = null;
-    }
-    addChunk(chunk, mimeType, timestamp) {
-      this._chunks.push({ timestamp, data: chunk, mimeType });
-      this._evict();
-    }
-    _evict() {
-      const newestTimestamp = this._chunks.length > 0 ? this._chunks[this._chunks.length - 1].timestamp : 0;
-      const cutoff = newestTimestamp - this._maxDuration;
-      while (this._chunks.length > 0) {
-        const oldest = this._chunks[0];
-        if (this._pinTimestamp !== null && oldest.timestamp >= this._pinTimestamp) break;
-        if (oldest.timestamp >= cutoff) break;
-        this._chunks.shift();
-      }
-    }
-    getChunks(startTime, endTime) {
-      return this._chunks.filter(c => c.timestamp >= startTime && c.timestamp <= endTime).map(c => c.data);
-    }
-    pin(startTime) { this._pinTimestamp = startTime; }
-    unpin() { this._pinTimestamp = null; this._evict(); }
-    getBufferedDuration() { return this._chunks.length < 2 ? 0 : this._chunks[this._chunks.length - 1].timestamp - this._chunks[0].timestamp; }
-    getOldestTimestamp() { return this._chunks.length > 0 ? this._chunks[0].timestamp : 0; }
-    getNewestTimestamp() { return this._chunks.length > 0 ? this._chunks[this._chunks.length - 1].timestamp : 0; }
-    setMaxDuration(seconds) { this._maxDuration = seconds * 1000; this._evict(); }
-    clear() { this._chunks = []; this._pinTimestamp = null; }
+  class DiskSegmentBuffer {
+  constructor(maxDurationMs = 60 * 60 * 1000) {
+    this._maxDuration = maxDurationMs;
+    this._dbName = `TwitchRewindDB_${Date.now()}_${Math.random().toString(36).substring(2)}`;
+    this._storeName = "segments";
+    this._db = null;
+    this._pinTimestamp = null;
+    this._metaCache = []; 
+    this._totalBytes = 0;
+    this._initPromise = this._initDB();
+
+    window.addEventListener("unload", () => {
+      if (this._db) this._db.close();
+      indexedDB.deleteDatabase(this._dbName);
+    });
   }
+
+  async _initDB() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(this._dbName, 1);
+      req.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        db.createObjectStore(this._storeName, { keyPath: "timestamp" });
+      };
+      req.onsuccess = (e) => {
+        this._db = e.target.result;
+        resolve();
+      };
+      req.onerror = (e) => reject(e.target.error);
+    });
+  }
+
+  async addChunk(chunk, mimeType, timestamp) {
+    if (window.__TW_DEBUG__) window.__TW_DEBUG__.chunksAdded++;
+    const size = chunk.byteLength || chunk.size || chunk.length || 0;
+    this._metaCache.push({ timestamp, mimeType, size });
+    this._totalBytes += size;
+
+    try {
+      await this._initPromise;
+      return new Promise((resolve, reject) => {
+        const tx = this._db.transaction(this._storeName, "readwrite");
+        tx.objectStore(this._storeName).put({ timestamp, data: chunk, mimeType });
+        tx.oncomplete = () => {
+          this._evict().then(resolve).catch(reject);
+        };
+        tx.onerror = () => reject(tx.error);
+      });
+    } catch(e) {
+      // Silently fail if IDB is blocked (e.g., incognito)
+    }
+  }
+
+  async _evict() {
+    if (this._maxDuration === -1) return; // Infinite limit
+
+    const newestTimestamp = this._metaCache.length > 0 ? this._metaCache[this._metaCache.length - 1].timestamp : 0;
+    const cutoff = newestTimestamp - this._maxDuration;
+
+    let toDelete = [];
+    while (this._metaCache.length > 0) {
+      const oldest = this._metaCache[0];
+      if (this._pinTimestamp !== null && oldest.timestamp >= this._pinTimestamp) break;
+      if (oldest.timestamp >= cutoff) break;
+      
+      const removed = this._metaCache.shift();
+      this._totalBytes -= removed.size || 0;
+      toDelete.push(removed.timestamp);
+    }
+
+    if (toDelete.length > 0) {
+      return new Promise((resolve, reject) => {
+        const tx = this._db.transaction(this._storeName, "readwrite");
+        const store = tx.objectStore(this._storeName);
+        toDelete.forEach(ts => store.delete(ts));
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error);
+      });
+    }
+  }
+
+  async getChunks(startTime, endTime) {
+    await this._initPromise;
+    const validMeta = this._metaCache.filter(c => c.timestamp >= startTime && c.timestamp <= endTime);
+    if (validMeta.length === 0) return [];
+
+    return new Promise((resolve, reject) => {
+      const tx = this._db.transaction(this._storeName, "readonly");
+      const store = tx.objectStore(this._storeName);
+      const results = [];
+      let pending = validMeta.length;
+
+      validMeta.forEach(meta => {
+        const req = store.get(meta.timestamp);
+        req.onsuccess = () => {
+          if (req.result) results.push(req.result);
+          pending--;
+          if (pending === 0) {
+            results.sort((a, b) => a.timestamp - b.timestamp);
+            resolve(results.map(r => r.data));
+          }
+        };
+        req.onerror = () => {
+          pending--;
+          if (pending === 0) resolve(results.map(r => r.data));
+        };
+      });
+    });
+  }
+
+  pin(startTime) { this._pinTimestamp = startTime; }
+  unpin() { this._pinTimestamp = null; this._evict(); }
+  getBufferedDuration() { return this._metaCache.length < 2 ? 0 : this._metaCache[this._metaCache.length - 1].timestamp - this._metaCache[0].timestamp; }
+  getOldestTimestamp() { return this._metaCache.length > 0 ? this._metaCache[0].timestamp : 0; }
+  getNewestTimestamp() { return this._metaCache.length > 0 ? this._metaCache[this._metaCache.length - 1].timestamp : 0; }
+  getTotalBytes() { return this._totalBytes; }
+  setMaxDuration(seconds) { 
+    this._maxDuration = seconds === -1 ? -1 : seconds * 1000; 
+    if (this._maxDuration !== -1) this._evict(); 
+  }
+  clear() { 
+    this._metaCache = []; 
+    this._pinTimestamp = null; 
+    this._totalBytes = 0;
+    if (this._db) {
+      const tx = this._db.transaction(this._storeName, "readwrite");
+      tx.objectStore(this._storeName).clear();
+    }
+  }
+}
+
 
   class VODResolver {
     constructor() {
@@ -449,6 +606,7 @@
           const style = document.createElement('style');
           style.id = 'tw-rewind-global-style';
           style.textContent = `
+              @keyframes twRewindBlink { 0% { opacity: 1; } 50% { opacity: 0.2; } 100% { opacity: 1; } }
               .tw-rewind-vol-slider {
                   width: 0px !important;
                   min-width: 0px !important;
@@ -559,7 +717,7 @@
         btn = document.createElement('button');
         btn.id = 'twRewindLiveBtn';
         btn.style.cssText = 'background:transparent; border:none; color:#adadb8; cursor:pointer; font-weight:600; font-size:13px; display:flex; align-items:center; gap:6px; padding:0 10px; font-family:inherit; transition: color 0.2s;';
-        btn.innerHTML = `<span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#adadb8; transition:all 0.2s;" id="twRewindLiveDot"></span> LIVE`;
+        btn.innerHTML = `<span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#adadb8; transition:all 0.2s;" id="twRewindLiveDot"></span> LIVE <span id="twRewindRecIndicator" style="display:none; align-items:center; gap:4px; font-size:11px; color:#ff4f4d; margin-left:4px; font-weight:700;"><span class="rec-dot" style="display:inline-block; width:6px; height:6px; background:#ff4f4d; border-radius:50%; animation:twRewindBlink 1.5s infinite;"></span>REC</span>`;
         
         btn.addEventListener('click', () => {
           for (const cb of this._liveCallbacks) cb();
@@ -588,6 +746,11 @@
         this._liveBtnEl.style.color = '#adadb8';
         this._liveDotEl.style.background = '#adadb8';
         this._liveDotEl.style.boxShadow = 'none';
+      }
+      
+      const recIndicator = document.getElementById('twRewindRecIndicator');
+      if (recIndicator) {
+        recIndicator.style.display = (this._currentMode === 'buffer') ? 'flex' : 'none';
       }
     }
 
@@ -739,8 +902,9 @@
       });
     }
 
-    updateStatus(isLive, secondsBehind, maxAvailable) {
+    updateStatus(isLive, secondsBehind, maxAvailable, mode) {
       this._isCurrentlyLive = isLive;
+      this._currentMode = mode;
       this._updateLiveButtonUI();
 
       if (!this._shadow) return;
@@ -780,9 +944,9 @@
   }
 
   class Orchestrator {
-    constructor() {
-      this._interceptor = new Interceptor();
-      this._buffer = new SegmentBuffer();
+    constructor(interceptor) {
+      this._interceptor = interceptor;
+      this._buffer = new DiskSegmentBuffer();
       this._vodResolver = new VODResolver();
       this._player = new RewindPlayer();
       this._ui = new UIController();
@@ -794,7 +958,6 @@
     }
 
     init() {
-      this._interceptor.start();
       window.addEventListener('message', (e) => {
         if (e.source === window && e.data?.source === 'TWITCH_REWIND_ISOLATED') {
           if (['SETTINGS_LOADED', 'SETTINGS_UPDATED'].includes(e.data.action)) {
@@ -1023,10 +1186,23 @@
       if (!isLive) {
         secondsBehind = this._player.getSecondsBehindLive();
       }
-      this._ui.updateStatus(isLive, secondsBehind, maxAvailable);
+      this._ui.updateStatus(isLive, secondsBehind, maxAvailable, this._mode);
+
+      // Broadcast stats for the popup UI
+      const bytes = this._buffer.getTotalBytes ? this._buffer.getTotalBytes() : 0;
+      window.postMessage({
+        source: 'TWITCH_REWIND_MAIN',
+        action: 'BUFFER_STATS_UPDATE',
+        payload: {
+          mode: this._mode,
+          bufferedSeconds: maxAvailable,
+          bytes: bytes,
+          debug: window.__TW_DEBUG__ || null
+        }
+      }, '*');
     }
 
-    _onRewind(seconds) {
+    async _onRewind(seconds) {
       if (this._mode === 'vod') {
         this._player.seekVOD(seconds);
       } else if (this._mode === 'buffer') {
@@ -1034,7 +1210,12 @@
         if (seconds * 1000 > bufferDuration) seconds = bufferDuration / 1000;
         const startTime = this._buffer.getNewestTimestamp() - (seconds * 1000);
         this._buffer.pin(startTime);
-        const chunks = this._buffer.getChunks(startTime, this._buffer.getNewestTimestamp());
+        
+        // Show spinner while fetching from disk
+        this._ui.setBuffering(true);
+        const chunks = await this._buffer.getChunks(startTime, this._buffer.getNewestTimestamp());
+        this._ui.setBuffering(false);
+        
         const initSeg = this._interceptor.getInitSegment();
         if (!initSeg || chunks.length === 0) return;
         this._player.startBuffer(chunks, initSeg, this._interceptor.getLastMimeType(), seconds);
@@ -1047,7 +1228,14 @@
     }
   }
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => new Orchestrator().init());
-  else new Orchestrator().init();
+  // Start the interceptor instantly before Twitch's React app can cache the original functions
+  const globalInterceptor = new Interceptor();
+  globalInterceptor.start();
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => new Orchestrator(globalInterceptor).init());
+  else new Orchestrator(globalInterceptor).init();
 
 })();
+
+
+

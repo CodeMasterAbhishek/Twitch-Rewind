@@ -45,6 +45,10 @@
           result = true;
           break;
 
+        case 'BUFFER_STATS_UPDATE':
+          chrome.runtime.sendMessage({ action: 'BUFFER_STATS_UPDATE', payload }).catch(() => {});
+          return;
+
         default:
           return;
       }
