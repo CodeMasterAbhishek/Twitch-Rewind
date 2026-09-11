@@ -119,19 +119,22 @@
     }
     async resolve(channelLogin) {
       try {
-        const vodInfo = await this._getActiveVOD(channelLogin);
-        if (!vodInfo) return null;
-        const token = await this._getPlaybackToken(vodInfo.vodId);
-        if (!token) return null;
-        const playlistUrl = this._buildPlaylistUrl(vodInfo.vodId, token);
-        return { vodId: vodInfo.vodId, playlistUrl, streamStartedAt: vodInfo.createdAt };
-      } catch (e) { return null; }
+        const info = await this._getActiveVOD(channelLogin);
+        if (!info || !info.isLive) return { isLive: false };
+        if (!info.vodId) return { isLive: true, vodData: null };
+        const token = await this._getPlaybackToken(info.vodId);
+        if (!token) return { isLive: true, vodData: null };
+        const playlistUrl = this._buildPlaylistUrl(info.vodId, token);
+        return { isLive: true, vodData: { vodId: info.vodId, playlistUrl, streamStartedAt: info.createdAt } };
+      } catch (e) { return { isLive: false }; }
     }
     async _getActiveVOD(channelLogin) {
       const res = await fetch(this._gqlEndpoint, { method: 'POST', headers: { 'Client-ID': this._clientId, 'Content-Type': 'application/json' }, body: JSON.stringify({ query: `query { user(login: "${channelLogin}") { stream { createdAt archiveVideo { id status } } }}` }) });
       const stream = (await res.json())?.data?.user?.stream;
-      if (stream?.archiveVideo?.id) return { vodId: stream.archiveVideo.id, createdAt: stream.createdAt };
-      return null;
+      if (stream) {
+          return { isLive: true, vodId: stream.archiveVideo?.id, createdAt: stream.createdAt };
+      }
+      return { isLive: false };
     }
     async _getPlaybackToken(vodId) {
       const res = await fetch(this._gqlEndpoint, { method: 'POST', headers: { 'Client-ID': this._clientId, 'Content-Type': 'application/json' }, body: JSON.stringify({ operationName: 'PlaybackAccessToken', variables: { vodID: vodId, params: { platform: 'web', playerBackend: 'mediaplayer', playerType: 'site' } }, query: `query PlaybackAccessToken($vodID: ID!, $params: PlaybackAccessTokenParams!) { videoPlaybackAccessToken(id: $vodID, params: $params) { value signature } }` }) });
@@ -980,13 +983,18 @@
       if (this._statusInterval) { clearInterval(this._statusInterval); this._statusInterval = null; }
       if (!this._settings.autoStart) return;
 
+      const status = await this._vodResolver.resolve(channel);
+      if (!status || !status.isLive) {
+          // Channel is offline. Do not mount the extension UI or intercept network requests.
+          return;
+      }
+
       this._interceptor.onSegment((c, m, t) => this._buffer.addChunk(c, m, t));
 
-      const vod = await this._vodResolver.resolve(channel);
-      if (vod && this._settings.preferVOD) { 
+      if (status.vodData && this._settings.preferVOD) { 
         this._mode = 'vod'; 
-        this._vodData = vod; 
-        this._player.preloadVOD(vod.playlistUrl);
+        this._vodData = status.vodData; 
+        this._player.preloadVOD(status.vodData.playlistUrl);
       } else { 
         this._mode = 'buffer'; 
         this._vodData = null; 
