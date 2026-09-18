@@ -7,54 +7,28 @@
 <body>
   <div class="popup-container">
     <div class="header">
-      <span class="logo">⏪</span>
+      <img src="../../icons/icon.png" class="logo" alt="Twitch Rewind">
       <h1>Twitch Rewind</h1>
     </div>
 
     <div class="section">
-      <label>Max Buffer Duration</label>
-      <select id="bufferDuration">
-        <option value="0.5">30 seconds</option>
-        <option value="60">1 hour</option>
-        <option value="120">2 hours</option>
-        <option value="180">3 hours</option>
-        <option value="custom">Custom</option>
-        <option value="infinite">Infinite</option>
-      </select>
-      <div id="customDurationWrapper" style="display: none; margin-top: 8px;">
-        <input type="number" id="customDuration" min="1" placeholder="Minutes" style="width: 100%; padding: 4px; box-sizing: border-box; background: var(--bg-tertiary); border: 1px solid var(--border-color); color: var(--text-primary); border-radius: 4px;">
-      </div>
-      <p class="hint" id="memoryHint">Stored locally on your drive</p>
-    </div>
-
-    <div class="section">
       <label class="toggle-label">
+        <span class="toggle-text">Auto-start on Twitch streams</span>
         <input type="checkbox" id="autoStart" checked>
-        <span>Auto-start on Twitch streams</span>
+        <div class="toggle-switch"><div class="toggle-slider"></div></div>
       </label>
-    </div>
-
-    <div class="section">
-      <label class="toggle-label">
-        <input type="checkbox" id="preferVOD" checked>
-        <span>Prefer VOD mode (recommended)</span>
+      <label class="toggle-label" style="margin-top: 8px;">
+        <span class="toggle-text">Automatically unmute streams</span>
+        <input type="checkbox" id="autoUnmute">
+        <div class="toggle-switch"><div class="toggle-slider"></div></div>
       </label>
-      <p class="hint">Zero memory usage when available</p>
     </div>
 
     <div class="section status-section" id="statusSection">
-      <div class="status-row">
-        <span>Mode:</span>
-        <span id="currentMode">—</span>
-      </div>
-      <div class="status-row">
-        <span>Buffer:</span>
-        <span id="bufferFill">—</span>
-      </div>
-      <div class="status-row" id="diagRow" style="display:none; font-size: 11px; opacity: 0.8; margin-top: 4px; border-top: 1px dashed rgba(255,255,255,0.15); padding-top: 4px; word-break: break-all;">
-        <span>Engine:</span>
-        <span id="diagInfo">—</span>
-      </div>
+      <div class="status-header">Current Stream</div>
+      <div class="channel-name" id="channelName">Waiting...</div>
+      <div class="stream-title" id="streamTitle"></div>
+      <div class="rewind-status waiting" id="rewindStatus">Checking status...</div>
     </div>
 
     <div class="footer">

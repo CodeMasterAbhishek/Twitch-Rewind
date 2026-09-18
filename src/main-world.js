@@ -7,267 +7,6 @@
 
   const LOG_PREFIX = '[TwitchRewind]';
 
-    class Interceptor {
-    constructor() {
-      this._origAppendBuffer = null;
-      this._origFetch = null;
-      this._origAddSourceBuffer = null;
-      this._segmentCallbacks = [];
-      this._playlistCallbacks = [];
-      this._startTime = Date.now();
-      this._initSegments = new Map();
-      this._started = false;
-      this._lastMimeType = null;
-      
-      window.__TW_DEBUG__ = {
-        appendCalls: 0,
-        addSourceBufferCalls: 0,
-        chunksAdded: 0,
-        fetchCalls: 0,
-        tsFetchCalls: 0,
-        xhrCalls: 0,
-        workerCalls: 0,
-        errors: [],
-        lastError: null
-      };
-    }
-
-    start() {
-      if (this._started) return;
-      this._started = true;
-      this._patchMediaSource();
-      this._patchAppendBuffer();
-      this._patchFetch();
-      this._patchXHR();
-      this._patchWorker();
-    }
-
-    _patchWorker() {
-      const self = this;
-      const OrigWorker = window.Worker;
-      window.Worker = function(...args) {
-        if (window.__TW_DEBUG__) window.__TW_DEBUG__.workerCalls++;
-        console.log(LOG_PREFIX, 'Worker instantiated:', args[0]);
-        return new OrigWorker(...args);
-      };
-      window.Worker.prototype = OrigWorker.prototype;
-    }
-
-    _patchXHR() {
-      const self = this;
-      const origOpen = XMLHttpRequest.prototype.open;
-      const origSend = XMLHttpRequest.prototype.send;
-      XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-        this._tw_url = typeof url === 'string' ? url : '';
-        return origOpen.call(this, method, url, ...rest);
-      };
-      XMLHttpRequest.prototype.send = function(...args) {
-        if (window.__TW_DEBUG__) window.__TW_DEBUG__.xhrCalls++;
-        return origSend.apply(this, args);
-      };
-    }
-
-    _patchMediaSource() {
-      const self = this;
-      this._origAddSourceBuffer = window.MediaSource.prototype.addSourceBuffer;
-      window.MediaSource.prototype.addSourceBuffer = function(mimeType) {
-        if (window.__TW_DEBUG__) window.__TW_DEBUG__.addSourceBufferCalls++;
-        console.log(LOG_PREFIX, 'addSourceBuffer called with mimeType:', mimeType);
-        const sb = self._origAddSourceBuffer.call(this, mimeType);
-        try { sb._tw_mimeType = mimeType; } catch(e) {}
-        return sb;
-      };
-    }
-
-    _patchAppendBuffer() {
-      const self = this;
-      this._origAppendBuffer = SourceBuffer.prototype.appendBuffer;
-      SourceBuffer.prototype.appendBuffer = function(data) {
-        if (window.__TW_DEBUG__) window.__TW_DEBUG__.appendCalls++;
-        try {
-          const copy = data instanceof ArrayBuffer ? data.slice(0) : new Uint8Array(data).buffer;
-          const mimeType = this._tw_mimeType || this.mimeType || self._lastMimeType || 'video/mp4; codecs="avc1.64002a,mp4a.40.2"';
-          self._lastMimeType = mimeType;
-          const timestamp = Date.now() - self._startTime;
-
-          if (copy.byteLength >= 8) {
-            const view = new DataView(copy);
-            const boxType = String.fromCharCode(view.getUint8(4), view.getUint8(5), view.getUint8(6), view.getUint8(7));
-            if (boxType === 'ftyp') self._initSegments.set(mimeType, copy);
-          }
-          for (const cb of self._segmentCallbacks) { 
-            try { cb(copy, mimeType, timestamp); } catch(cbErr) {
-              if (window.__TW_DEBUG__) window.__TW_DEBUG__.errors.push('cb: ' + cbErr.message);
-            } 
-          }
-        } catch (e) {
-          if (window.__TW_DEBUG__) {
-            window.__TW_DEBUG__.errors.push('append: ' + e.message);
-            window.__TW_DEBUG__.lastError = e.message;
-          }
-        }
-        return self._origAppendBuffer.call(this, data);
-      };
-    }
-
-    _patchFetch() {
-      const self = this;
-      this._origFetch = window.fetch;
-      window.fetch = function(...args) {
-        const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
-        if (window.__TW_DEBUG__) {
-          window.__TW_DEBUG__.fetchCalls++;
-          if (url.includes('.ts') || url.includes('.mp4') || url.includes('chunked') || url.includes('video-edge')) {
-            window.__TW_DEBUG__.tsFetchCalls++;
-          }
-        }
-        if (url.includes('.m3u8')) {
-          for (const cb of self._playlistCallbacks) { try { cb(url); } catch(e) {} }
-        }
-        return self._origFetch.apply(this, args);
-      };
-    }
-
-    getInitSegment(mimeType) {
-      if (mimeType && this._initSegments.has(mimeType)) return this._initSegments.get(mimeType);
-      return this._initSegments.values().next().value || null;
-    }
-    getLastMimeType() { return this._lastMimeType || 'video/mp4; codecs="avc1.64002a,mp4a.40.2"'; }
-    onSegment(cb) { this._segmentCallbacks.push(cb); }
-    clearCallbacks() { this._segmentCallbacks = []; this._playlistCallbacks = []; }
-  }
-
-  class DiskSegmentBuffer {
-  constructor(maxDurationMs = 60 * 60 * 1000) {
-    this._maxDuration = maxDurationMs;
-    this._dbName = `TwitchRewindDB_${Date.now()}_${Math.random().toString(36).substring(2)}`;
-    this._storeName = "segments";
-    this._db = null;
-    this._pinTimestamp = null;
-    this._metaCache = []; 
-    this._totalBytes = 0;
-    this._initPromise = this._initDB();
-
-    window.addEventListener("unload", () => {
-      if (this._db) this._db.close();
-      indexedDB.deleteDatabase(this._dbName);
-    });
-  }
-
-  async _initDB() {
-    return new Promise((resolve, reject) => {
-      const req = indexedDB.open(this._dbName, 1);
-      req.onupgradeneeded = (e) => {
-        const db = e.target.result;
-        db.createObjectStore(this._storeName, { keyPath: "timestamp" });
-      };
-      req.onsuccess = (e) => {
-        this._db = e.target.result;
-        resolve();
-      };
-      req.onerror = (e) => reject(e.target.error);
-    });
-  }
-
-  async addChunk(chunk, mimeType, timestamp) {
-    if (window.__TW_DEBUG__) window.__TW_DEBUG__.chunksAdded++;
-    const size = chunk.byteLength || chunk.size || chunk.length || 0;
-    this._metaCache.push({ timestamp, mimeType, size });
-    this._totalBytes += size;
-
-    try {
-      await this._initPromise;
-      return new Promise((resolve, reject) => {
-        const tx = this._db.transaction(this._storeName, "readwrite");
-        tx.objectStore(this._storeName).put({ timestamp, data: chunk, mimeType });
-        tx.oncomplete = () => {
-          this._evict().then(resolve).catch(reject);
-        };
-        tx.onerror = () => reject(tx.error);
-      });
-    } catch(e) {
-      // Silently fail if IDB is blocked (e.g., incognito)
-    }
-  }
-
-  async _evict() {
-    if (this._maxDuration === -1) return; // Infinite limit
-
-    const newestTimestamp = this._metaCache.length > 0 ? this._metaCache[this._metaCache.length - 1].timestamp : 0;
-    const cutoff = newestTimestamp - this._maxDuration;
-
-    let toDelete = [];
-    while (this._metaCache.length > 0) {
-      const oldest = this._metaCache[0];
-      if (this._pinTimestamp !== null && oldest.timestamp >= this._pinTimestamp) break;
-      if (oldest.timestamp >= cutoff) break;
-      
-      const removed = this._metaCache.shift();
-      this._totalBytes -= removed.size || 0;
-      toDelete.push(removed.timestamp);
-    }
-
-    if (toDelete.length > 0) {
-      return new Promise((resolve, reject) => {
-        const tx = this._db.transaction(this._storeName, "readwrite");
-        const store = tx.objectStore(this._storeName);
-        toDelete.forEach(ts => store.delete(ts));
-        tx.oncomplete = resolve;
-        tx.onerror = () => reject(tx.error);
-      });
-    }
-  }
-
-  async getChunks(startTime, endTime) {
-    await this._initPromise;
-    const validMeta = this._metaCache.filter(c => c.timestamp >= startTime && c.timestamp <= endTime);
-    if (validMeta.length === 0) return [];
-
-    return new Promise((resolve, reject) => {
-      const tx = this._db.transaction(this._storeName, "readonly");
-      const store = tx.objectStore(this._storeName);
-      const results = [];
-      let pending = validMeta.length;
-
-      validMeta.forEach(meta => {
-        const req = store.get(meta.timestamp);
-        req.onsuccess = () => {
-          if (req.result) results.push(req.result);
-          pending--;
-          if (pending === 0) {
-            results.sort((a, b) => a.timestamp - b.timestamp);
-            resolve(results.map(r => r.data));
-          }
-        };
-        req.onerror = () => {
-          pending--;
-          if (pending === 0) resolve(results.map(r => r.data));
-        };
-      });
-    });
-  }
-
-  pin(startTime) { this._pinTimestamp = startTime; }
-  unpin() { this._pinTimestamp = null; this._evict(); }
-  getBufferedDuration() { return this._metaCache.length < 2 ? 0 : this._metaCache[this._metaCache.length - 1].timestamp - this._metaCache[0].timestamp; }
-  getOldestTimestamp() { return this._metaCache.length > 0 ? this._metaCache[0].timestamp : 0; }
-  getNewestTimestamp() { return this._metaCache.length > 0 ? this._metaCache[this._metaCache.length - 1].timestamp : 0; }
-  getTotalBytes() { return this._totalBytes; }
-  setMaxDuration(seconds) { 
-    this._maxDuration = seconds === -1 ? -1 : seconds * 1000; 
-    if (this._maxDuration !== -1) this._evict(); 
-  }
-  clear() { 
-    this._metaCache = []; 
-    this._pinTimestamp = null; 
-    this._totalBytes = 0;
-    if (this._db) {
-      const tx = this._db.transaction(this._storeName, "readwrite");
-      tx.objectStore(this._storeName).clear();
-    }
-  }
-}
-
 
   class VODResolver {
     constructor() {
@@ -573,12 +312,14 @@
     isActive() { return this._isActive; }
 
     destroy() {
+      this.returnToLive();
       this._setBuffering(false);
       if (this._posterCanvas) { this._posterCanvas.remove(); this._posterCanvas = null; }
       if (this._hlsInstance) { this._hlsInstance.destroy(); this._hlsInstance = null; }
       if (this._mediaSource && this._mediaSource.readyState === 'open') { try { this._mediaSource.endOfStream(); } catch(e) {} }
       if (this._overlayVideo) { this._overlayVideo.pause(); this._overlayVideo.removeAttribute('src'); this._overlayVideo.load(); this._overlayVideo.remove(); this._overlayVideo = null; }
       this._isActive = false; this._isPreloaded = false; this._mode = null;
+      this._twitchVideo = null;
     }
   }
 
@@ -606,7 +347,6 @@
           const style = document.createElement('style');
           style.id = 'tw-rewind-global-style';
           style.textContent = `
-              @keyframes twRewindBlink { 0% { opacity: 1; } 50% { opacity: 0.2; } 100% { opacity: 1; } }
               .tw-rewind-vol-slider {
                   width: 0px !important;
                   min-width: 0px !important;
@@ -717,7 +457,7 @@
         btn = document.createElement('button');
         btn.id = 'twRewindLiveBtn';
         btn.style.cssText = 'background:transparent; border:none; color:#adadb8; cursor:pointer; font-weight:600; font-size:13px; display:flex; align-items:center; gap:6px; padding:0 10px; font-family:inherit; transition: color 0.2s;';
-        btn.innerHTML = `<span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#adadb8; transition:all 0.2s;" id="twRewindLiveDot"></span> LIVE <span id="twRewindRecIndicator" style="display:none; align-items:center; gap:4px; font-size:11px; color:#ff4f4d; margin-left:4px; font-weight:700;"><span class="rec-dot" style="display:inline-block; width:6px; height:6px; background:#ff4f4d; border-radius:50%; animation:twRewindBlink 1.5s infinite;"></span>REC</span>`;
+        btn.innerHTML = `<span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#adadb8; transition:all 0.2s;" id="twRewindLiveDot"></span> LIVE`;
         
         btn.addEventListener('click', () => {
           for (const cb of this._liveCallbacks) cb();
@@ -747,15 +487,14 @@
         this._liveDotEl.style.background = '#adadb8';
         this._liveDotEl.style.boxShadow = 'none';
       }
-      
-      const recIndicator = document.getElementById('twRewindRecIndicator');
-      if (recIndicator) {
-        recIndicator.style.display = (this._currentMode === 'buffer') ? 'flex' : 'none';
-      }
     }
 
     _getHTML() {
       return `
+        <div id="disabledNotice" style="position:absolute; top: 10%; left: 50%; transform: translateX(-50%); background: rgba(235, 4, 0, 0.9); color: #fff; padding: 10px 16px; border-radius: 4px; font-size: 14px; font-weight: bold; display: none; pointer-events: auto; z-index: 100; align-items: center; gap: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.5);">
+          <span>Cannot rewind: VOD is disabled for this stream</span>
+          <span id="closeNoticeBtn" style="cursor:pointer; font-size:16px; font-weight:normal; opacity:0.8; transition:opacity 0.2s; line-height:1;">✖</span>
+        </div>
         <div id="ytNotification" style="position:absolute; top: 10%; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.6); color: #fff; padding: 10px 20px; border-radius: 4px; font-size: 14px; font-weight: bold; opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 100;"></div>
         <div class="spinner" id="loadingOverlay"></div>
         <div class="dvr-container" id="dvrContainer">
@@ -841,6 +580,14 @@
       `;
     }
 
+    setDisabledNotice(show) {
+      if (!this._shadow) return;
+      const notice = this._shadow.getElementById('disabledNotice');
+      if (notice) {
+        notice.style.display = show ? 'flex' : 'none';
+      }
+    }
+
     setBuffering(state) {
       if (!this._shadow) return;
       const overlay = this._shadow.getElementById('loadingOverlay');
@@ -851,6 +598,15 @@
     }
 
     _bindEvents(target) {
+      const closeBtn = this._shadow.getElementById('closeNoticeBtn');
+      if (closeBtn) {
+        closeBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const notice = this._shadow.getElementById('disabledNotice');
+          if (notice) notice.style.display = 'none';
+        });
+      }
+      
       let hideTimeout;
       const showControls = () => {
          const dvr = this._shadow.getElementById('dvrContainer');
@@ -908,6 +664,15 @@
       this._updateLiveButtonUI();
 
       if (!this._shadow) return;
+      
+      const dvr = this._shadow.getElementById('dvrContainer');
+      if (mode === 'disabled') {
+        if (dvr) dvr.style.display = 'none';
+        return;
+      } else {
+        if (dvr) dvr.style.display = 'flex';
+      }
+
       const seekBar = this._shadow.getElementById('seekBar');
       seekBar.min = -Math.floor(maxAvailable);
 
@@ -944,16 +709,14 @@
   }
 
   class Orchestrator {
-    constructor(interceptor) {
-      this._interceptor = interceptor;
-      this._buffer = new DiskSegmentBuffer();
+    constructor() {
       this._vodResolver = new VODResolver();
       this._player = new RewindPlayer();
       this._ui = new UIController();
       this._currentChannel = null;
       this._mode = null;
       this._vodData = null;
-      this._settings = { maxBufferMinutes: 10, autoStart: true, preferVOD: true };
+      this._settings = { autoStart: true, autoUnmute: false };
       this._statusInterval = null;
     }
 
@@ -962,7 +725,16 @@
         if (e.source === window && e.data?.source === 'TWITCH_REWIND_ISOLATED') {
           if (['SETTINGS_LOADED', 'SETTINGS_UPDATED'].includes(e.data.action)) {
             Object.assign(this._settings, e.data.payload);
-            this._buffer.setMaxDuration(this._settings.maxBufferMinutes * 60);
+            
+            if (this._settings.autoStart === false) {
+              this._mode = 'off';
+              this._ui.unmount();
+              this._player.destroy();
+              if (this._statusInterval) { clearInterval(this._statusInterval); this._statusInterval = null; }
+              window.postMessage({ source: 'TWITCH_REWIND_MAIN', action: 'BUFFER_STATS_UPDATE', payload: { mode: 'off', channel: this._currentChannel, title: document.title } }, '*');
+            } else if (e.data.action === 'SETTINGS_UPDATED' && this._settings.autoStart) {
+              this._onChannelChange(this._currentChannel);
+            }
           }
         }
       });
@@ -1060,6 +832,7 @@
     }
 
     _changeVolume(delta) {
+      if (this._mode === 'disabled' || this._mode === 'off') return;
       const video = this._player._twitchVideo || document.querySelector('video');
       if (!video) return;
       let newVol = video.volume + delta;
@@ -1077,6 +850,7 @@
     }
 
     _changeSpeed(delta) {
+      if (this._mode === 'disabled' || this._mode === 'off') return;
       if (this._player && this._player._overlayVideo) {
           let newSpeed = this._player._overlayVideo.playbackRate + delta;
           if (newSpeed < 0.25) newSpeed = 0.25;
@@ -1087,11 +861,10 @@
     }
 
     _seekToPercent(percent) {
+      if (this._mode === 'disabled' || this._mode === 'off') return;
       let maxAvailable = 0;
       if (this._mode === 'vod' && this._vodData) {
         maxAvailable = (Date.now() - new Date(this._vodData.streamStartedAt).getTime()) / 1000;
-      } else {
-        maxAvailable = this._buffer.getBufferedDuration() / 1000;
       }
       
       let targetBehind = maxAvailable * (1 - percent);
@@ -1106,6 +879,7 @@
     }
 
     _seekRelative(delta) {
+      if (this._mode === 'disabled' || this._mode === 'off') return;
       let currentBehind = 0;
       if (this._player.isActive()) {
         currentBehind = this._player.getSecondsBehindLive();
@@ -1116,8 +890,6 @@
       let maxAvailable = 0;
       if (this._mode === 'vod' && this._vodData) {
         maxAvailable = (Date.now() - new Date(this._vodData.streamStartedAt).getTime()) / 1000;
-      } else {
-        maxAvailable = this._buffer.getBufferedDuration() / 1000;
       }
       
       if (targetBehind > maxAvailable) targetBehind = maxAvailable;
@@ -1142,42 +914,72 @@
     }
 
     async _onChannelChange(channel) {
-      this._player.destroy(); this._buffer.clear(); this._interceptor.clearCallbacks();
+      if (this._checkContainerInterval) { clearInterval(this._checkContainerInterval); this._checkContainerInterval = null; }
+      this._ui.unmount();
+      this._player.destroy();
       if (this._statusInterval) { clearInterval(this._statusInterval); this._statusInterval = null; }
       if (!this._settings.autoStart) return;
 
       const status = await this._vodResolver.resolve(channel);
+      
+      // Re-verify autoStart in case settings loaded while awaiting network response
+      if (!this._settings.autoStart) return;
+
       if (!status || !status.isLive) {
           // Channel is offline. Do not mount the extension UI or intercept network requests.
           return;
       }
 
-      this._interceptor.onSegment((c, m, t) => this._buffer.addChunk(c, m, t));
-
-      if (status.vodData && this._settings.preferVOD) { 
+      if (status.vodData) { 
         this._mode = 'vod'; 
         this._vodData = status.vodData; 
         this._player.preloadVOD(status.vodData.playlistUrl);
       } else { 
-        this._mode = 'buffer'; 
+        this._mode = 'disabled'; 
         this._vodData = null; 
       }
 
-      const checkContainer = setInterval(() => {
+      this._checkContainerInterval = setInterval(() => {
+        if (!this._settings.autoStart) {
+          clearInterval(this._checkContainerInterval);
+          return;
+        }
         if (document.querySelector('.video-player__container')) {
-          clearInterval(checkContainer);
+          clearInterval(this._checkContainerInterval);
           this._ui.mount();
+          if (this._mode === 'disabled') {
+            this._ui.setDisabledNotice(true);
+          }
           this._statusInterval = setInterval(() => this._updateStatus(), 1000);
+          
+          if (this._settings.autoUnmute) {
+             let attempts = 0;
+             const unmuteInterval = setInterval(() => {
+                if (++attempts > 10) { clearInterval(unmuteInterval); return; }
+                const video = document.querySelector('video');
+                if (video && (video.muted || video.volume === 0)) {
+                   video.muted = false;
+                   if (video.volume === 0) video.volume = 0.5;
+                   clearInterval(unmuteInterval);
+                }
+             }, 500);
+          }
         }
       }, 500);
     }
 
     _updateStatus() {
+      if (this._ui._host && !document.contains(this._ui._host)) {
+        this._ui._mounted = false;
+        this._ui.mount();
+        if (this._mode === 'disabled') {
+          this._ui.setDisabledNotice(true);
+        }
+      }
+
       let maxAvailable = 0;
       if (this._mode === 'vod' && this._vodData) {
         maxAvailable = (Date.now() - new Date(this._vodData.streamStartedAt).getTime()) / 1000;
-      } else {
-        maxAvailable = this._buffer.getBufferedDuration() / 1000;
       }
 
       const isLive = !this._player.isActive();
@@ -1188,16 +990,14 @@
       }
       this._ui.updateStatus(isLive, secondsBehind, maxAvailable, this._mode);
 
-      // Broadcast stats for the popup UI
-      const bytes = this._buffer.getTotalBytes ? this._buffer.getTotalBytes() : 0;
       window.postMessage({
         source: 'TWITCH_REWIND_MAIN',
         action: 'BUFFER_STATS_UPDATE',
         payload: {
           mode: this._mode,
           bufferedSeconds: maxAvailable,
-          bytes: bytes,
-          debug: window.__TW_DEBUG__ || null
+          channel: this._currentChannel,
+          title: document.title
         }
       }, '*');
     }
@@ -1205,35 +1005,16 @@
     async _onRewind(seconds) {
       if (this._mode === 'vod') {
         this._player.seekVOD(seconds);
-      } else if (this._mode === 'buffer') {
-        const bufferDuration = this._buffer.getBufferedDuration();
-        if (seconds * 1000 > bufferDuration) seconds = bufferDuration / 1000;
-        const startTime = this._buffer.getNewestTimestamp() - (seconds * 1000);
-        this._buffer.pin(startTime);
-        
-        // Show spinner while fetching from disk
-        this._ui.setBuffering(true);
-        const chunks = await this._buffer.getChunks(startTime, this._buffer.getNewestTimestamp());
-        this._ui.setBuffering(false);
-        
-        const initSeg = this._interceptor.getInitSegment();
-        if (!initSeg || chunks.length === 0) return;
-        this._player.startBuffer(chunks, initSeg, this._interceptor.getLastMimeType(), seconds);
       }
     }
 
     _onReturnToLive() {
       this._player.returnToLive();
-      this._buffer.unpin();
     }
   }
 
-  // Start the interceptor instantly before Twitch's React app can cache the original functions
-  const globalInterceptor = new Interceptor();
-  globalInterceptor.start();
-
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => new Orchestrator(globalInterceptor).init());
-  else new Orchestrator(globalInterceptor).init();
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => new Orchestrator().init());
+  else new Orchestrator().init();
 
 })();
 

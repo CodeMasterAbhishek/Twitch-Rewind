@@ -1,10 +1,7 @@
 // Default settings
 const DEFAULTS = {
-  maxBufferMinutes: 10,
   autoStart: true,
-  preferVOD: true,
-  presets: [30, 60, 600, 1800, 3600], // seconds
-  keyboardShortcut: 'R'
+  autoUnmute: false
 };
 
 // Initialize defaults on install
