@@ -45,8 +45,6 @@
     constructor() {
       this._overlayVideo = null;
       this._hlsInstance = null;
-      this._mediaSource = null;
-      this._sourceBuffer = null;
       this._isActive = false;
       this._isPreloaded = false;
       this._twitchVideo = null;
@@ -122,70 +120,6 @@
       if (this._twitchVideo && !this._twitchVideo.paused) {
           this._overlayVideo.play().catch(()=>{});
       }
-    }
-
-    startBuffer(chunks, initSegment, mimeCodec, initialGapSeconds) {
-      this.destroy(); 
-      this._mode = 'buffer';
-      this._targetSecondsBehind = initialGapSeconds;
-      this._setupOverlay();
-
-        if (this._twitchVideo) {
-            if (this._posterCanvas) {
-                try {
-                    this._posterCanvas.width = this._twitchVideo.videoWidth || 1920;
-                    this._posterCanvas.height = this._twitchVideo.videoHeight || 1080;
-                    const ctx = this._posterCanvas.getContext('2d');
-                    ctx.drawImage(this._twitchVideo, 0, 0, this._posterCanvas.width, this._posterCanvas.height);
-                    this._posterCanvas.style.opacity = '1';
-                } catch (e) {}
-            }
-            const currentMuted = this._twitchVideo.muted;
-            const currentVolume = this._twitchVideo.volume;
-            this._isActive = true;
-            this._twitchVideo.muted = currentMuted;
-            this._twitchVideo.volume = currentVolume;
-            this._twitchVideo.style.opacity = '0';
-      } else {
-          this._isActive = true;
-      }
-      this._overlayVideo.style.opacity = '1';
-
-      const codec = mimeCodec || 'video/mp4; codecs="avc1.64002a,mp4a.40.2"';
-      if (!MediaSource.isTypeSupported(codec)) return false;
-
-      this._mediaSource = new MediaSource();
-      this._overlayVideo.src = URL.createObjectURL(this._mediaSource);
-
-      this._mediaSource.addEventListener('sourceopen', () => {
-        URL.revokeObjectURL(this._overlayVideo.src);
-        try { this._sourceBuffer = this._mediaSource.addSourceBuffer(codec); } catch (e) { return; }
-
-        let appendedInit = false;
-        let i = 0;
-        const appendNext = () => {
-          if (i >= chunks.length) return;
-          if (!this._sourceBuffer.updating) {
-            try { this._sourceBuffer.appendBuffer(chunks[i]); i++; } catch(e) { i++; appendNext(); }
-          }
-        };
-
-        this._sourceBuffer.addEventListener('updateend', () => {
-          if (!appendedInit) { appendedInit = true; appendNext(); } 
-          else {
-            if (i === 1 && this._overlayVideo.buffered.length > 0) {
-              this._videoPtsStart = this._overlayVideo.buffered.start(0);
-              this._overlayVideo.currentTime = this._videoPtsStart;
-              if (this._twitchVideo && !this._twitchVideo.paused) {
-                this._overlayVideo.play().catch(()=>{});
-              }
-            }
-            appendNext();
-          }
-        });
-        this._sourceBuffer.appendBuffer(initSegment);
-      });
-      return true;
     }
 
     _setupOverlay() {
@@ -274,17 +208,9 @@
     }
 
     getSecondsBehindLive() {
-      if (!this._overlayVideo) return 0;
-      if (this._mode === 'vod') {
-        if (!this._isActive) return 0;
-        if (this._overlayVideo.readyState === 0 || this._overlayVideo.seeking) return this._targetSecondsBehind;
-        return Math.max(0, this._vodDuration - this._overlayVideo.currentTime);
-      } else if (this._mode === 'buffer') {
-        if (!this._isActive) return 0;
-        if (!this._videoPtsStart) return this._targetSecondsBehind;
-        return Math.max(0, this._targetSecondsBehind - (this._overlayVideo.currentTime - this._videoPtsStart));
-      }
-      return 0;
+      if (!this._overlayVideo || !this._isActive) return 0;
+      if (this._overlayVideo.readyState === 0 || this._overlayVideo.seeking) return this._targetSecondsBehind;
+      return Math.max(0, this._vodDuration - this._overlayVideo.currentTime);
     }
 
     returnToLive() {
@@ -316,8 +242,12 @@
       this._setBuffering(false);
       if (this._posterCanvas) { this._posterCanvas.remove(); this._posterCanvas = null; }
       if (this._hlsInstance) { this._hlsInstance.destroy(); this._hlsInstance = null; }
-      if (this._mediaSource && this._mediaSource.readyState === 'open') { try { this._mediaSource.endOfStream(); } catch(e) {} }
       if (this._overlayVideo) { this._overlayVideo.pause(); this._overlayVideo.removeAttribute('src'); this._overlayVideo.load(); this._overlayVideo.remove(); this._overlayVideo = null; }
+      if (this._twitchVideo && this._twitchVideo._twRewindHijacked) {
+          delete this._twitchVideo.volume;
+          delete this._twitchVideo.muted;
+          this._twitchVideo._twRewindHijacked = false;
+      }
       this._isActive = false; this._isPreloaded = false; this._mode = null;
       this._twitchVideo = null;
     }
@@ -474,6 +404,43 @@
       this._liveBtnEl = btn;
       this._liveDotEl = document.getElementById('twRewindLiveDot');
       this._updateLiveButtonUI();
+
+      let helpBtn = document.getElementById('twRewindHelpBtn');
+      if (!helpBtn) {
+        helpBtn = document.createElement('button');
+        helpBtn.id = 'twRewindHelpBtn';
+        helpBtn.style.cssText = 'background:transparent; border:none; color:#efeff1; cursor:pointer; font-weight:700; font-size:14px; display:inline-flex; align-items:center; justify-content:center; width: 30px; height: 30px; border-radius: 4px; transition: background 0.2s, color 0.2s; margin-right: 4px; font-family: inherit;';
+        helpBtn.textContent = '?';
+        helpBtn.title = 'Twitch Rewind Shortcuts (H or ?)';
+        
+        helpBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.toggleShortcutOverlay();
+        });
+        helpBtn.addEventListener('mouseover', () => {
+            helpBtn.style.background = 'rgba(255, 255, 255, 0.15)';
+        });
+        helpBtn.addEventListener('mouseout', () => {
+            helpBtn.style.background = 'transparent';
+        });
+        
+        const rightGroup = document.querySelector('.player-controls__right-control-group');
+        const settingsBtn = document.querySelector('[data-a-target="player-settings-button"]');
+        
+        if (rightGroup) {
+            let insertBeforeNode = settingsBtn;
+            if (settingsBtn && rightGroup.contains(settingsBtn)) {
+                while (insertBeforeNode && insertBeforeNode.parentElement !== rightGroup) {
+                    insertBeforeNode = insertBeforeNode.parentElement;
+                }
+            }
+            if (insertBeforeNode) {
+                rightGroup.insertBefore(helpBtn, insertBeforeNode);
+            } else {
+                rightGroup.prepend(helpBtn);
+            }
+        }
+      }
     }
 
     _updateLiveButtonUI() {
@@ -500,6 +467,27 @@
         <div class="dvr-container" id="dvrContainer">
           <input type="range" class="seek-slider" id="seekBar" min="-600" max="0" value="0" title="Scrub to rewind">
           <span class="time-display" id="timeDisplay">LIVE</span>
+        </div>
+        <div class="catchup-badge" id="catchupBadge">CATCH-UP</div>
+        <div class="shortcut-overlay" id="shortcutOverlay">
+          <div class="shortcut-title">
+            <span>Keyboard Shortcuts</span>
+            <span id="closeShortcuts" class="shortcut-close">✖</span>
+          </div>
+          <div class="shortcut-list">
+            <div class="shortcut-item"><div class="shortcut-keys"><kbd>←</kbd><kbd>J</kbd></div><span>Rewind 10s</span></div>
+            <div class="shortcut-item"><div class="shortcut-keys"><kbd>→</kbd><kbd>L</kbd></div><span>Forward 10s</span></div>
+            <div class="shortcut-item"><div class="shortcut-keys"><kbd>K</kbd><kbd>Space</kbd></div><span>Play / Pause</span></div>
+            <div class="shortcut-item"><div class="shortcut-keys"><kbd>↑</kbd></div><span>Volume up</span></div>
+            <div class="shortcut-item"><div class="shortcut-keys"><kbd>↓</kbd></div><span>Volume down</span></div>
+            <div class="shortcut-item"><div class="shortcut-keys"><kbd>M</kbd></div><span>Mute / Unmute</span></div>
+            <div class="shortcut-item"><div class="shortcut-keys"><kbd>F</kbd></div><span>Fullscreen</span></div>
+            <div class="shortcut-item"><div class="shortcut-keys"><kbd>&lt;</kbd></div><span>Speed down</span></div>
+            <div class="shortcut-item"><div class="shortcut-keys"><kbd>&gt;</kbd></div><span>Speed up</span></div>
+            <div class="shortcut-item"><div class="shortcut-keys"><kbd>C</kbd></div><span>Toggle catch-up</span></div>
+            <div class="shortcut-item"><div class="shortcut-keys"><kbd>0</kbd>–<kbd>9</kbd></div><span>Seek to 0–90%</span></div>
+            <div class="shortcut-item"><div class="shortcut-keys"><kbd>H</kbd><kbd>?</kbd></div><span>Shortcuts Help</span></div>
+          </div>
         </div>
       `;
     }
@@ -577,6 +565,68 @@
             min-width: 45px; 
             text-align: right; 
         }
+        .catchup-badge {
+            position: absolute;
+            top: 10px; right: 10px;
+            background: rgba(145, 70, 255, 0.85);
+            color: #fff;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.2s;
+            z-index: 50;
+        }
+        .catchup-badge.visible { opacity: 1; }
+        .shortcut-overlay {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(24, 24, 27, 0.95);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 12px;
+            padding: 24px;
+            min-width: 300px;
+            display: none;
+            pointer-events: auto;
+            z-index: 200;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+            backdrop-filter: blur(8px);
+        }
+        .shortcut-overlay.visible { display: block; }
+        .shortcut-title {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 16px; padding-bottom: 12px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            font-size: 15px; font-weight: 700; color: #efeff1;
+        }
+        .shortcut-close {
+            cursor: pointer; opacity: 0.6; transition: opacity 0.2s;
+            font-size: 14px;
+        }
+        .shortcut-close:hover { opacity: 1; }
+        .shortcut-list { display: flex; flex-direction: column; gap: 6px; }
+        .shortcut-item {
+            display: flex; justify-content: space-between; align-items: center;
+            font-size: 13px; color: #dedee3; gap: 16px;
+        }
+        .shortcut-item > span { color: #adadb8; white-space: nowrap; }
+        .shortcut-keys { display: flex; gap: 4px; }
+        kbd {
+            background: rgba(255,255,255,0.1);
+            border: 1px solid rgba(255,255,255,0.15);
+            border-radius: 4px;
+            padding: 2px 8px;
+            font-size: 11px;
+            font-family: inherit;
+            color: #fff;
+            min-width: 24px;
+            text-align: center;
+            line-height: 1.4;
+        }
       `;
     }
 
@@ -597,13 +647,46 @@
       }
     }
 
+    toggleShortcutOverlay() {
+      if (!this._shadow) return;
+      const overlay = this._shadow.getElementById('shortcutOverlay');
+      if (overlay) overlay.classList.toggle('visible');
+    }
+
+    hideShortcutOverlay() {
+      if (!this._shadow) return;
+      const overlay = this._shadow.getElementById('shortcutOverlay');
+      if (overlay) overlay.classList.remove('visible');
+    }
+
+    setCatchUpBadge(visible, speed) {
+      if (!this._shadow) return;
+      const badge = this._shadow.getElementById('catchupBadge');
+      if (badge) {
+        if (visible) {
+          badge.textContent = `CATCH-UP ${speed}x`;
+          badge.classList.add('visible');
+        } else {
+          badge.classList.remove('visible');
+        }
+      }
+    }
+
     _bindEvents(target) {
-      const closeBtn = this._shadow.getElementById('closeNoticeBtn');
-      if (closeBtn) {
-        closeBtn.addEventListener('click', (e) => {
+      const closeNotice = this._shadow.getElementById('closeNoticeBtn');
+      if (closeNotice) {
+        closeNotice.addEventListener('click', (e) => {
           e.stopPropagation();
           const notice = this._shadow.getElementById('disabledNotice');
           if (notice) notice.style.display = 'none';
+        });
+      }
+
+      const closeShortcuts = this._shadow.getElementById('closeShortcuts');
+      if (closeShortcuts) {
+        closeShortcuts.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.hideShortcutOverlay();
         });
       }
       
@@ -718,6 +801,8 @@
       this._vodData = null;
       this._settings = { autoStart: true, autoUnmute: false };
       this._statusInterval = null;
+      this._catchUpEnabled = false;
+      this._lastCatchUpRate = 1.0;
     }
 
     init() {
@@ -744,7 +829,6 @@
       this._player.onBuffering((state) => this._ui.setBuffering(state));
 
       this._bindKeyboardShortcuts();
-      this._bindUniversalClickToPause();
 
       let lastUrl = location.href;
       const checkNav = () => { if (location.href !== lastUrl) { lastUrl = location.href; this._onUrlChange(); } };
@@ -757,32 +841,6 @@
       this._onUrlChange();
     }
 
-    _bindUniversalClickToPause() {
-      window.addEventListener('click', (e) => {
-          // If the click originated from our Shadow DOM (e.g. the timeline scrubber), ignore it!
-          if (e.target.id === 'twitch-rewind-root') return;
-
-          const player = document.querySelector('.video-player__container');
-          if (!player || !player.contains(e.target)) return;
-
-          // Don't intercept clicks on controls or interactive elements
-          if (e.target.closest('.player-controls__bottom-control-group') || 
-              e.target.closest('.player-controls__left-control-group') || 
-              e.target.closest('.player-controls__right-control-group') || 
-              e.target.closest('button') || 
-              e.target.closest('a') || 
-              e.target.closest('input') ||
-              e.target.closest('.extension-overlay') || 
-              e.target.closest('.chat-room') ||
-              e.target.closest('iframe')) {
-              return;
-          }
-
-          const playBtn = document.querySelector('[data-a-target="player-play-pause-button"]');
-          if (playBtn) playBtn.click();
-      });
-    }
-
     _bindKeyboardShortcuts() {
       window.addEventListener('keydown', (e) => {
         const ae = document.activeElement;
@@ -790,10 +848,10 @@
 
         const key = e.key.toLowerCase();
         
-        if (key === 'arrowleft') {
+        if (key === 'arrowleft' || key === 'j') {
           e.preventDefault(); e.stopPropagation();
           this._seekRelative(-10);
-        } else if (key === 'arrowright') {
+        } else if (key === 'arrowright' || key === 'l') {
           e.preventDefault(); e.stopPropagation();
           this._seekRelative(10);
         } else if (key === 'arrowup') {
@@ -827,6 +885,14 @@
           e.preventDefault(); e.stopPropagation();
           const playBtn = document.querySelector('[data-a-target="player-play-pause-button"]');
           if (playBtn) playBtn.click();
+        } else if (key === 'c') {
+          e.preventDefault(); e.stopPropagation();
+          this._toggleCatchUp();
+        } else if (key === '?' || key === 'h') {
+          e.preventDefault(); e.stopPropagation();
+          this._ui.toggleShortcutOverlay();
+        } else if (key === 'escape') {
+          this._ui.hideShortcutOverlay();
         }
       }, true);
     }
@@ -851,12 +917,37 @@
 
     _changeSpeed(delta) {
       if (this._mode === 'disabled' || this._mode === 'off') return;
+      // Manual speed change disables catch-up
+      if (this._catchUpEnabled) {
+        this._catchUpEnabled = false;
+        this._ui.setCatchUpBadge(false);
+      }
       if (this._player && this._player._overlayVideo) {
           let newSpeed = this._player._overlayVideo.playbackRate + delta;
           if (newSpeed < 0.25) newSpeed = 0.25;
           if (newSpeed > 2.0) newSpeed = 2.0;
           this._player._overlayVideo.playbackRate = newSpeed;
           this._ui.showNotification(`Speed: ${newSpeed}x`);
+      }
+    }
+
+    _toggleCatchUp() {
+      if (this._mode === 'disabled' || this._mode === 'off') return;
+      this._catchUpEnabled = !this._catchUpEnabled;
+      if (this._catchUpEnabled) {
+        this._lastCatchUpRate = 1.0;
+        this._ui.showNotification('Catch-up: ON');
+        this._ui.setCatchUpBadge(true, '...');
+        // Start rewind if not already active — jump back 10s to give it something to catch up to
+        if (!this._player.isActive() && this._mode === 'vod') {
+          this._onRewind(10);
+        }
+      } else {
+        if (this._player._overlayVideo) {
+          this._player._overlayVideo.playbackRate = 1.0;
+        }
+        this._ui.showNotification('Catch-up: OFF');
+        this._ui.setCatchUpBadge(false);
       }
     }
 
@@ -922,8 +1013,8 @@
 
       const status = await this._vodResolver.resolve(channel);
       
-      // Re-verify autoStart in case settings loaded while awaiting network response
-      if (!this._settings.autoStart) return;
+      // Re-verify channel and autoStart in case settings loaded while awaiting network response
+      if (!this._settings.autoStart || this._currentChannel !== channel) return;
 
       if (!status || !status.isLive) {
           // Channel is offline. Do not mount the extension UI or intercept network requests.
@@ -988,6 +1079,32 @@
       if (!isLive) {
         secondsBehind = this._player.getSecondsBehindLive();
       }
+
+      // Auto catch-up speed adjustment
+      if (this._catchUpEnabled && !isLive && this._player._overlayVideo) {
+        let targetRate = 1.0;
+        if (secondsBehind > 120) targetRate = 2.0;
+        else if (secondsBehind > 30) targetRate = 1.5;
+        else if (secondsBehind > 10) targetRate = 1.25;
+        else if (secondsBehind <= 5) {
+          this._catchUpEnabled = false;
+          this._player._overlayVideo.playbackRate = 1.0;
+          this._ui.setCatchUpBadge(false);
+          this._ui.showNotification('Caught up!');
+          this._onReturnToLive();
+          return;
+        }
+
+        if (targetRate !== this._lastCatchUpRate) {
+          this._player._overlayVideo.playbackRate = targetRate;
+          this._lastCatchUpRate = targetRate;
+          this._ui.setCatchUpBadge(true, targetRate);
+        }
+      } else if (!this._catchUpEnabled && this._player._overlayVideo && this._player._overlayVideo.playbackRate !== 1.0 && !this._player.isActive()) {
+        // Reset speed when not catching up and returned to live
+        this._player._overlayVideo.playbackRate = 1.0;
+      }
+
       this._ui.updateStatus(isLive, secondsBehind, maxAvailable, this._mode);
 
       window.postMessage({
@@ -1002,13 +1119,17 @@
       }, '*');
     }
 
-    async _onRewind(seconds) {
-      if (this._mode === 'vod') {
-        this._player.seekVOD(seconds);
-      }
+    _onRewind(seconds) {
+      if (this._mode !== 'vod') return;
+      this._player.seekVOD(seconds);
     }
 
     _onReturnToLive() {
+      if (this._catchUpEnabled) {
+        this._catchUpEnabled = false;
+        this._lastCatchUpRate = 1.0;
+        this._ui.setCatchUpBadge(false);
+      }
       this._player.returnToLive();
     }
   }

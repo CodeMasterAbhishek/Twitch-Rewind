@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Twitch Rewind",
-  "description": "DVR-like rewind for Twitch live streams. Jump back 30s to 1hr instantly.",
+  "name": "Twitch Rewind: Live Stream DVR",
+  "description": "Rewind live Twitch streams to any moment. Includes a simple progress slider, keyboard shortcuts, and a smart catch-up mode.",
   "version": "1.0.0",
 
   "permissions": [
