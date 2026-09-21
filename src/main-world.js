@@ -703,7 +703,13 @@
       };
 
       target.addEventListener('mousemove', showControls);
-      target.addEventListener('click', showControls);
+      target.addEventListener('click', (e) => {
+        showControls();
+        // Blur any focused Twitch button so keyboard shortcuts keep working
+        if (document.activeElement && document.activeElement.tagName === 'BUTTON') {
+          document.activeElement.blur();
+        }
+      });
       target.addEventListener('mouseleave', () => {
          if (!this._isScrubbing) {
              clearTimeout(hideTimeout);

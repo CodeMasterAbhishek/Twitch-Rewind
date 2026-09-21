@@ -55,3 +55,34 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 });
 
+
+// Smart Rating System Logic
+chrome.storage.sync.get(['ratingPromptStatus'], (data) => {
+  // Re-enabled memory lock for production
+  if (data.ratingPromptStatus !== 'clicked' && data.ratingPromptStatus !== 'dismissed') {
+    document.getElementById('popupRatingSection').style.display = 'block';
+  }
+
+  const EXTENSION_REVIEW_URL = 'https://chromewebstore.google.com/detail/fnlecbndghcdfkjdgmpmhmfbiifckgne/reviews';
+  const stars = document.querySelectorAll('.p-star');
+  const container = document.getElementById('popupStars');
+
+  stars.forEach(star => {
+    star.addEventListener('mouseover', (e) => {
+      const val = parseInt(e.target.dataset.val);
+      stars.forEach(s => {
+        s.style.color = parseInt(s.dataset.val) <= val ? '#eab308' : '#4f4f5a';
+      });
+    });
+
+    star.addEventListener('click', (e) => {
+      window.open(EXTENSION_REVIEW_URL, '_blank');
+      chrome.storage.sync.set({ ratingPromptStatus: 'clicked' });
+      document.getElementById('popupRatingSection').style.display = 'none';
+    });
+  });
+
+  container.addEventListener('mouseout', () => {
+    stars.forEach(s => s.style.color = '#4f4f5a');
+  });
+});
