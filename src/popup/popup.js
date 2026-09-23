@@ -1,5 +1,3 @@
-
-
 document.addEventListener("DOMContentLoaded", async () => {
   const autoStart = document.getElementById('autoStart');
   const autoUnmute = document.getElementById('autoUnmute');
@@ -16,6 +14,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   autoUnmute.addEventListener('change', (e) => {
     chrome.storage.sync.set({ autoUnmute: e.target.checked });
   });
+
+  // Dynamically set version from manifest
+  const versionEl = document.getElementById('versionText');
+  if (versionEl) {
+    versionEl.textContent = 'v' + chrome.runtime.getManifest().version;
+  }
 });
 
 
@@ -63,7 +67,7 @@ chrome.storage.sync.get(['ratingPromptStatus'], (data) => {
     document.getElementById('popupRatingSection').style.display = 'block';
   }
 
-  const EXTENSION_REVIEW_URL = 'https://chromewebstore.google.com/detail/fnlecbndghcdfkjdgmpmhmfbiifckgne/reviews';
+  const EXTENSION_REVIEW_URL = 'https://chromewebstore.google.com/detail/twitch-rewind-live-stream/fnlecbndghcdfkjdgmpmhmfbiifckgne/reviews';
   const stars = document.querySelectorAll('.p-star');
   const container = document.getElementById('popupStars');
 

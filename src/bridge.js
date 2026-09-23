@@ -113,7 +113,7 @@
       box-sizing: border-box;
     `;
 
-    const EXTENSION_REVIEW_URL = 'https://chromewebstore.google.com/detail/fnlecbndghcdfkjdgmpmhmfbiifckgne/reviews';
+    const EXTENSION_REVIEW_URL = 'https://chromewebstore.google.com/detail/twitch-rewind-live-stream/fnlecbndghcdfkjdgmpmhmfbiifckgne/reviews';
 
     function renderInitialUI() {
       toast.innerHTML = `
