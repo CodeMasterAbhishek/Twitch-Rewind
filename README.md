@@ -4,11 +4,15 @@
 
 Rewind live Twitch streams to any moment! This browser extension adds DVR capabilities to Twitch, allowing you to pause, rewind, and fast-forward live streams seamlessly.
 
-## Screenshots
+## Preview
 
 <div align="center">
-  <img src="assets/screenshot-1.png" alt="Twitch Rewind Screenshot 1" width="45%" />
-  <img src="assets/screenshot-2.png" alt="Twitch Rewind Screenshot 2" width="45%" />
+  <img src="assets/screenshot-twitch.png" alt="Twitch Rewind in action on Twitch" width="90%" />
+</div>
+<br />
+<div align="center">
+  <img src="assets/screenshot-1.png" alt="Store Listing 1" width="45%" />
+  <img src="assets/screenshot-2.png" alt="Store Listing 2" width="45%" />
 </div>
 
 ## Features
