@@ -1,6 +1,15 @@
 # Twitch Rewind: Live Stream DVR
 
+[![Available in the Chrome Web Store](https://img.shields.io/chrome-web-store/v/fnlecbndghcdfkjdgmpmhmfbiifckgne.svg?color=blue&label=Chrome%20Web%20Store)](https://chromewebstore.google.com/detail/twitch-rewind-live-stream/fnlecbndghcdfkjdgmpmhmfbiifckgne)
+
 Rewind live Twitch streams to any moment! This browser extension adds DVR capabilities to Twitch, allowing you to pause, rewind, and fast-forward live streams seamlessly.
+
+## Screenshots
+
+<div align="center">
+  <img src="assets/screenshot-1.png" alt="Twitch Rewind Screenshot 1" width="45%" />
+  <img src="assets/screenshot-2.png" alt="Twitch Rewind Screenshot 2" width="45%" />
+</div>
 
 ## Features
 
@@ -10,6 +19,10 @@ Rewind live Twitch streams to any moment! This browser extension adds DVR capabi
 - **Lightweight:** Runs seamlessly without impacting performance.
 
 ## Installation
+
+### From the Chrome Web Store
+
+You can install the extension directly from the [Chrome Web Store](https://chromewebstore.google.com/detail/twitch-rewind-live-stream/fnlecbndghcdfkjdgmpmhmfbiifckgne).
 
 ### Manual Installation (Developer Mode)
 
@@ -32,6 +45,7 @@ Rewind live Twitch streams to any moment! This browser extension adds DVR capabi
   - `main-world.js`: Core logic injected into the page's main context.
   - `popup/`: HTML, CSS, and JS for the extension's popup interface.
 - `icons/`: Extension icons in various sizes.
+- `assets/`: Images and screenshots for documentation.
 - `vendor/`: Third-party dependencies (like `hls.min.js`).
 
 ## Usage
